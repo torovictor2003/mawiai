@@ -18,16 +18,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-
-# Cheapest / fastest current Claude alias from Anthropic docs
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
-
 SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "You are a helpful Telegram assistant. Keep replies clear, short, and useful.",
 )
+
+if not TELEGRAM_BOT_TOKEN:
+    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in Railway Variables")
+
+if not ANTHROPIC_API_KEY:
+    raise RuntimeError("Missing ANTHROPIC_API_KEY in Railway Variables")
 
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -84,10 +87,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             max_tokens=700,
             system=SYSTEM_PROMPT,
             messages=[
-                {
-                    "role": "user",
-                    "content": user_text,
-                }
+                {"role": "user", "content": user_text}
             ],
         )
 
@@ -96,10 +96,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if getattr(block, "type", None) == "text":
                 text_parts.append(block.text)
 
-        reply = "".join(text_parts).strip()
-
-        if not reply:
-            reply = "I got your message, but I couldn’t generate a reply."
+        reply = "".join(text_parts).strip() or "I got your message, but I couldn’t generate a reply."
 
         for chunk in split_long_message(reply):
             await update.message.reply_text(chunk)
