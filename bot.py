@@ -1,109 +1,126 @@
+import logging
 import os
-import requests
-from anthropic import Anthropic
+
+from anthropic import AsyncAnthropic
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ChatAction
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-CMC_API_KEY = os.environ.get("CMC_API_KEY")
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
-COINS = ["BTC", "ETH", "SOL", "BNB", "DOGE"]
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
-def get_prices():
-    try:
-        url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
-        r = requests.get(url,
-            headers={"X-CMC_PRO_API_KEY": CMC_API_KEY},
-            params={"symbol": ",".join(COINS), "convert": "USD"},
-            timeout=10
-        )
-        data = r.json()
-        out = {}
-        for coin in COINS:
-            if coin in data.get("data", {}):
-                q = data["data"][coin]["quote"]["USD"]
-                out[coin] = {
-                    "price": q["price"],
-                    "change_24h": q["percent_change_24h"],
-                    "change_1h": q["percent_change_1h"],
-                }
-        return out
-    except Exception as e:
-        print(f"Price error: {e}")
-        return {}
+# Cheapest / fastest current Claude alias from Anthropic docs
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
 
-def prices_text(prices):
-    if not prices:
-        return "Could not fetch prices."
-    lines = ["Live Prices:\n"]
-    for coin, d in prices.items():
-        lines.append(f"{coin}: ${d['price']:,.4f} | 24h: {d['change_24h']:+.2f}%")
-    return "\n".join(lines)
+SYSTEM_PROMPT = os.getenv(
+    "SYSTEM_PROMPT",
+    "You are a helpful Telegram assistant. Keep replies clear, short, and useful.",
+)
 
-def ask_claude(market, question):
-    try:
-        r = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=400,
-            system="""You are a crypto trading AI for a $150 account.
-Always respond in this format:
-Signal: BUY/SELL/HOLD
-Coin:
-Entry:
-Take Profit:
-Stop Loss:
-Confidence: X/10
-Reason: (one sentence)
-Risk Warning: (one sentence)""",
-            messages=[{"role": "user", "content": f"{market}\n\n{question}"}]
-        )
-        return r.content[0].text
-    except Exception as e:
-        return f"AI error: {e}"
+client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+def split_long_message(text: str, limit: int = 4000) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+
+    parts = []
+    current = ""
+
+    for line in text.splitlines(True):
+        if len(current) + len(line) <= limit:
+            current += line
+        else:
+            if current:
+                parts.append(current)
+            current = line
+
+    if current:
+        parts.append(current)
+
+    return parts
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🤖 Crypto AI Bot Ready\n\n"
-        "/signal - Best trade now\n"
-        "/prices - Live prices\n"
-        "/analysis - Market breakdown\n\n"
-        "Or just ask me anything!"
+        "Bot is live. Send me a message and I’ll reply with Claude."
     )
 
-async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Analyzing...")
-    p = get_prices()
-    result = ask_claude(prices_text(p), "What is the single best trade right now?")
-    await update.message.reply_text(f"📊 Signal\n\n{result}")
 
-async def cmd_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    p = get_prices()
-    await update.message.reply_text(prices_text(p))
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Send any text message and I’ll answer it."
+    )
 
-async def cmd_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Running analysis...")
-    p = get_prices()
-    result = ask_claude(prices_text(p), "Give me the top 2 trade setups and overall market sentiment.")
-    await update.message.reply_text(f"📈 Analysis\n\n{result}")
 
-async def cmd_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Thinking...")
-    p = get_prices()
-    result = ask_claude(prices_text(p), update.message.text)
-    await update.message.reply_text(result)
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
 
-def main():
-    print("Starting bot...")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("signal", cmd_signal))
-    app.add_handler(CommandHandler("prices", cmd_prices))
-    app.add_handler(CommandHandler("analysis", cmd_analysis))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, cmd_message))
-    print("✅ Bot is running...")
+    user_text = update.message.text.strip()
+    if not user_text:
+        return
+
+    try:
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=ChatAction.TYPING,
+        )
+
+        response = await client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=700,
+            system=SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": user_text,
+                }
+            ],
+        )
+
+        text_parts = []
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                text_parts.append(block.text)
+
+        reply = "".join(text_parts).strip()
+
+        if not reply:
+            reply = "I got your message, but I couldn’t generate a reply."
+
+        for chunk in split_long_message(reply):
+            await update.message.reply_text(chunk)
+
+    except Exception:
+        logger.exception("Error while processing Telegram message")
+        await update.message.reply_text(
+            "Something went wrong while contacting Claude. Check Railway logs."
+        )
+
+
+def main() -> None:
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    logger.info("Starting Telegram bot...")
     app.run_polling(drop_pending_updates=True)
+
 
 if __name__ == "__main__":
     main()
