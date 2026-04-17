@@ -18,7 +18,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = (
+    os.getenv("TELEGRAM_BOT_TOKEN")
+    or os.getenv("BOT_TOKEN")
+    or os.getenv("TELEGRAM_TOKEN")
+)
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
 SYSTEM_PROMPT = os.getenv(
@@ -27,10 +32,10 @@ SYSTEM_PROMPT = os.getenv(
 )
 
 if not TELEGRAM_BOT_TOKEN:
-    raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in Railway Variables")
+    raise RuntimeError("Missing Telegram token. Add TELEGRAM_BOT_TOKEN in Railway Variables.")
 
 if not ANTHROPIC_API_KEY:
-    raise RuntimeError("Missing ANTHROPIC_API_KEY in Railway Variables")
+    raise RuntimeError("Missing ANTHROPIC_API_KEY in Railway Variables.")
 
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -57,15 +62,13 @@ def split_long_message(text: str, limit: int = 4000) -> list[str]:
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Bot is live. Send me a message and I’ll reply with Claude."
-    )
+    if update.message:
+        await update.message.reply_text("Bot is live. Send me a message and I’ll reply.")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Send any text message and I’ll answer it."
-    )
+    if update.message:
+        await update.message.reply_text("Send any text message and I’ll answer it.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -87,7 +90,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             max_tokens=700,
             system=SYSTEM_PROMPT,
             messages=[
-                {"role": "user", "content": user_text}
+                {
+                    "role": "user",
+                    "content": user_text,
+                }
             ],
         )
 
@@ -96,26 +102,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if getattr(block, "type", None) == "text":
                 text_parts.append(block.text)
 
-        reply = "".join(text_parts).strip() or "I got your message, but I couldn’t generate a reply."
+        reply = "".join(text_parts).strip()
+        if not reply:
+            reply = "I got your message, but I couldn’t generate a reply."
 
         for chunk in split_long_message(reply):
             await update.message.reply_text(chunk)
 
     except Exception:
         logger.exception("Error while processing Telegram message")
-        await update.message.reply_text(
-            "Something went wrong while contacting Claude. Check Railway logs."
-        )
+        if update.message:
+            await update.message.reply_text(
+                "Something went wrong while contacting Claude. Check Railway logs."
+            )
 
 
 def main() -> None:
+    logger.info("Starting Telegram bot...")
+
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    logger.info("Starting Telegram bot...")
     app.run_polling(drop_pending_updates=True)
 
 
