@@ -1,3 +1,4 @@
 anthropic<1
 httpx>=0.25.0,<1
 python-telegram-bot>=21,<22
+matplotlib
